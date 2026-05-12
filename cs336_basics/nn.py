@@ -218,65 +218,49 @@ def scaled_dot_product_attention(
     
     return output
 
+import torch
+import torch.nn as nn
+
 class CausalSelfAttention(nn.Module):
-    def __init__(self, d_model: int, num_heads: int, bias: bool = False, 
-                 context_length=None, theta=None, 
-                 device=None, dtype=None):
+    def __init__(self, d_model: int, num_heads:int, max_seq_lens=None, theta= None, device=None, dtype=None):
         super().__init__()
-        assert d_model % num_heads == 0, "d_model 必须能被 num_heads 整除"
-        
-        self.d_model = d_model
+        assert d_model & num_heads == 0
+
         self.num_heads = num_heads
+        self.d_model = d_model
         self.d_k = d_model // num_heads
-        
-        # 1. 定义 Q, K, V 的投影层（PDF 要求 3 次矩阵乘法）
-        self.q_proj = Linear(d_model, d_model, device=device, dtype=dtype)
-        self.k_proj = Linear(d_model, d_model, device=device, dtype=dtype)
-        self.v_proj = Linear(d_model, d_model, device=device, dtype=dtype)
-        
-        # 2. 定义输出投影
-        self.output_proj = Linear(d_model, d_model, device=device, dtype=dtype)
-        
-        # 3. 实例化 RoPE
-        if theta is not None and context_length is not None:
-            self.rope = RotaryPositionalEmbedding(theta, self.d_k, context_length, device=device)
+
+        self.q_proj = Linear(d_model, d_model, device, dtype)
+        self.k_proj = Linear(d_model, d_model, device, dtype)
+        self.v_proj = Linear(d_model, d_model, device, dtype)
+
+        self.out_proj = Linear(d_model, d_model, device, dtype)
+
+        if theta is not None and max_seq_lens is not None:
+            # 这里不是d_model是d_k
+            self.rope = RotaryPositionalEmbedding(theta, self.d_k, max_seq_lens, device=device)
         else:
             self.rope = None
 
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor = None) -> torch.Tensor:
         b, s, d = x.shape
-        
-        # 步骤 1 & 2: 投影与拆分头 (保持不变)
-        # q = self.q_proj(x).view(b, s, self.num_heads, self.d_k).transpose(1, 2)
-        # k = self.k_proj(x).view(b, s, self.num_heads, self.d_k).transpose(1, 2)
-        # v = self.v_proj(x).view(b, s, self.num_heads, self.d_k).transpose(1, 2)
         q = rearrange(self.q_proj(x), '... s (h d) -> ... h s d', h=self.num_heads)
         k = rearrange(self.k_proj(x), '... s (h d) -> ... h s d', h=self.num_heads)
         v = rearrange(self.v_proj(x), '... s (h d) -> ... h s d', h=self.num_heads)
-        
 
-        # 步骤 3: 应用 RoPE
-        # 只有当模块存在时才应用
         if self.rope is not None:
-            # 如果没传位置，且 RoPE 需要位置，则生成默认位置
             if token_positions is None:
-                # 适配各种 Batch 维度，使用 expand 比 repeat 更高效
-                batch_dims = x.shape[:-2]
-                token_positions = torch.arange(s, device=x.device).expand(*batch_dims, s)
-            
+                token_positions = torch.arange(s, device=x.device).expand(b, s)
+
             q = self.rope(q, token_positions)
             k = self.rope(k, token_positions)
 
-        # 生成下三角矩阵
         mask = torch.tril(torch.ones(s, s, device=x.device, dtype=torch.bool))
+        attenion_out = scaled_dot_product_attention(q, k, v, mask=mask)
+        attenion_out = rearrange(attenion_out, '... h s d ->... s (h d)')
+        attenion_out = self.out_proj(attenion_out)
 
-        # 步骤 5: SDPA (SDPA 内部应能处理 mask 为 None 的情况)
-        attn_out = scaled_dot_product_attention(q, k, v, mask=mask)
-        
-        # 步骤 6 & 7: 合并与输出投影
-        attn_out = rearrange(attn_out, '... h s d -> ... s (h d)')
-        return self.output_proj(attn_out)
-
+        return attenion_out
 
 import torch
 import torch.nn as nn
