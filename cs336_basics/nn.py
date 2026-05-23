@@ -222,9 +222,9 @@ import torch
 import torch.nn as nn
 
 class CausalSelfAttention(nn.Module):
-    def __init__(self, d_model: int, num_heads:int, max_seq_lens=None, theta= None, device=None, dtype=None):
+    def __init__(self, d_model: int, num_heads:int, context_length=None, theta= None, device=None, dtype=None):
         super().__init__()
-        assert d_model & num_heads == 0
+        assert d_model % num_heads == 0
 
         self.num_heads = num_heads
         self.d_model = d_model
@@ -236,9 +236,9 @@ class CausalSelfAttention(nn.Module):
 
         self.out_proj = Linear(d_model, d_model, device, dtype)
 
-        if theta is not None and max_seq_lens is not None:
+        if theta is not None and context_length is not None:
             # 这里不是d_model是d_k
-            self.rope = RotaryPositionalEmbedding(theta, self.d_k, max_seq_lens, device=device)
+            self.rope = RotaryPositionalEmbedding(theta, self.d_k, context_length, device=device)
         else:
             self.rope = None
 

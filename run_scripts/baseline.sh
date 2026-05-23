@@ -1,6 +1,6 @@
 uv run python cs336_basics\main_train.py \
-    --train_data_path ../../data/TinyStoriesV2-GPT4-train/TinyStoriesV2-GPT4-train.bin \
-    --valid_data_path ../../data/TinyStoriesV2-GPT4-train/TinyStoriesV2-GPT4-valid.bin \
+    --train_data_path ../../data/TinyStoriesV2-GPT4-train.bin \
+    --valid_data_path ../../data/TinyStoriesV2-GPT4-valid.bin \
     --run_name "baseline_bs64_lr6e4" \
     --vocab_size 10000 \
     --num_layers 4 --num_heads 16 --d_model 512 --d_ff 1344 \
