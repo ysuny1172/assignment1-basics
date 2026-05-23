@@ -1,4 +1,4 @@
-uv run python cs336_basics\main_train.py \
+uv run python cs336_basics/main_train.py \
     --train_data_path ../../data/TinyStoriesV2-GPT4-train.bin \
     --valid_data_path ../../data/TinyStoriesV2-GPT4-valid.bin \
     --run_name "baseline_bs64_lr6e4" \
