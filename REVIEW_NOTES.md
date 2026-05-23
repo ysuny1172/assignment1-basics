@@ -55,6 +55,8 @@
 - 增量生成时如果前面已有 100 个 token，当前只喂入 1 个新 token，则这个新 token 的真实 position 是 100，不是当前小张量里的 0；RoPE 若错用 0，会把相对距离关系整体算错。
 - 绝对位置编码通常在 token embedding 后、进入 Transformer blocks 前加到 residual stream；RoPE 不是加到输入上，而是在每层 attention 内部对 Q/K 投影结果按位置做旋转。
 - 绝对位置编码也可以间接进入 Q/K：先做 `x_i = token_emb_i + pos_emb_i`，再投影得到 Q/K/V；但如果直接把绝对位置向量加到 Q/K 上，attention score 会混入绝对位置和内容-位置交叉项，不像 RoPE 那样天然得到相对位置差。
+- 绝对位置编码加在 token embedding 后，是因为 token id 先要被映射到 `d_model` 向量空间，才能和同维度的位置向量相加；它直接告诉模型“当前位置是 i”，相对关系 `i-j` 需要模型后续自己学出来。
+- 相对位置编码/RoPE 直接把位置差或会导出位置差的结构放进 attention score；RoPE 中位置 `i` 和 `j` 的 Q/K 旋转点积会自然依赖 `i-j`，所以相对信息是机制自带的。
 - `einops.rearrange` 不能无故丢掉输入轴；`b h s d -> b s (h d)` 或 `... h s d -> ... s (h d)` 才能把多头输出合回 `d_model`，同时保留 batch 维。
 - `einops` 的省略号必须用英文三个点 `...`，不要用 Unicode 单字符省略号 `…`；后者会被当成普通轴名，容易触发 “Identifiers only on one side”。
 
@@ -97,6 +99,7 @@
 - L1/L2 正则是在原 loss 外加一个“参数不要太大”的惩罚项：L1 惩罚绝对值和，L2 惩罚平方和；它们不是让训练集 loss 更低，而是用偏好约束换更好的泛化。
 - L2 的梯度与参数大小成正比，会平滑地把所有权重往 0 拉；L1 的梯度大小基本恒定且在 0 处有尖点，因此更容易把不重要权重压到精确 0，产生稀疏性。
 - `||theta||_2` 是欧几里得长度，来自勾股定理：二维是 `sqrt(theta_1^2 + theta_2^2)`，推广到 n 维就是 `sqrt(sum theta_i^2)`；L2 正则常用平方长度 `||theta||_2^2`，所以惩罚项是平方和。
+- L1 不是绝对不如 L2：它适合特征选择和稀疏模型；但在深度网络/LLM 里，L2/weight decay 更常用，因为惩罚是平滑的、优化更稳定、不会强行把大量权重压成精确 0，且密集硬件上稀疏参数通常不自动带来速度收益。
 
 ### LLM / LoRA
 
@@ -107,6 +110,11 @@
 
 - Assignment 1 PDF 里蓝框主要是低资源建议：先 profiling/downscaling，用 CPU/MPS 时注意 device、40M token 小训练、MPS 不开 TF32，可用 `torch.compile`，GPU 少时先在 TinyStories 做架构实验。
 - 橙黄框是 Problem 任务框，覆盖 tokenizer、Transformer 组件、loss/optimizer、training loop、decoding、实验和 leaderboard；它们是任务规格和交付要求，不是概念提示。
+
+### LM / Interactive Decoding
+
+- 终端交互续写本质是 REPL：读取用户 prompt，tokenizer 编码，模型自回归生成若干 token，tokenizer 解码后打印，再等待下一轮输入。
+- CS336 里的 LM 是 next-token continuation 模型，不是 instruction/chat 模型；想“像对话”需要人为维护文本历史和角色分隔，但模型未必真的学会聊天。
 
 ### PyTorch / Broadcasting
 
