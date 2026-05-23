@@ -1,3 +1,8 @@
+import argparse
+import json
+from array import array
+from pathlib import Path
+
 import regex as re  # 使用 regex 而非内置 re，因为它支持 Unicode 类别（如 \p{L}）
 from collections.abc import Iterable
 
@@ -11,7 +16,7 @@ For special_tokens:
         普通处理：特殊 Token 之间的文本，再走正常的 GPT-2 预分词和 BPE 合并流程。
 """
 
-class BPETokenizer:
+class tokenizer:
     """
     字节级 BPE（Byte-Pair Encoding）分词器实现。
     
@@ -218,3 +223,152 @@ class BPETokenizer:
         for chunk in iterable:
             # 对每一块文本进行编码，并通过 yield 吐出结果
             yield from self.encode(chunk)
+
+
+BPETokenizer = tokenizer
+
+
+def bytes_to_unicode():
+    """
+    创建和 train_bpe.py 中一致的 byte -> unicode 映射。
+    """
+    bs = list(range(ord("!"), ord("~") + 1)) + list(range(ord("¡"), ord("¬") + 1)) + list(range(ord("®"), ord("ÿ") + 1))
+    cs = bs[:]
+    n = 0
+    for b in range(256):
+        if b not in bs:
+            bs.append(b)
+            cs.append(256 + n)
+            n += 1
+    cs = [chr(n) for n in cs]
+    return dict(zip(bs, cs))
+
+
+def unicode_to_bytes():
+    """
+    反转 train_bpe.py 保存 vocab.json / merges.txt 时使用的编码。
+    """
+    return {v: k for k, v in bytes_to_unicode().items()}
+
+
+def token_string_to_bytes(token_string: str, decoder: dict[str, int]) -> bytes:
+    return bytes(decoder[ch] for ch in token_string)
+
+
+def load_tokenizer_files(
+    vocab_path: str | Path,
+    merges_path: str | Path,
+    special_tokens: list[str] | None = None,
+) -> tokenizer:
+    """
+    从 train_bpe.py 生成的 vocab.json 和 merges.txt 加载 tokenizer。
+    """
+    vocab_path = Path(vocab_path)
+    merges_path = Path(merges_path)
+    decoder = unicode_to_bytes()
+
+    with vocab_path.open("r", encoding="utf-8") as f:
+        json_vocab = json.load(f)
+    vocab = {
+        int(token_id): token_string_to_bytes(token_string, decoder)
+        for token_id, token_string in json_vocab.items()
+    }
+
+    merges = []
+    with merges_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.rstrip("\r\n")
+            if not line:
+                continue
+            left, right = line.split(" ")
+            merges.append((
+                token_string_to_bytes(left, decoder),
+                token_string_to_bytes(right, decoder),
+            ))
+
+    return tokenizer(vocab=vocab, merges=merges, special_tokens=special_tokens)
+
+
+def write_token_ids_bin(token_ids: list[int], output_path: str | Path, dtype: str) -> None:
+    """
+    将 token id 写为纯二进制数组。
+    """
+    typecodes = {
+        "uint16": "H",
+        "uint32": "I",
+    }
+    max_values = {
+        "uint16": 65535,
+        "uint32": 4294967295,
+    }
+    if dtype not in typecodes:
+        raise ValueError(f"dtype 只支持 {sorted(typecodes)}，收到: {dtype}")
+    if token_ids and max(token_ids) > max_values[dtype]:
+        raise ValueError(f"token id 超过 {dtype} 可表示范围，请改用更大的 dtype")
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    data = array(typecodes[dtype], token_ids)
+    with output_path.open("wb") as f:
+        data.tofile(f)
+
+
+def parse_args() -> argparse.Namespace:
+    default_tokenizer_dir = (Path(__file__).resolve().parent / "../../data/TinyStoriesV2-GPT4").resolve()
+
+    parser = argparse.ArgumentParser(description="使用 tokenizer 将文本编码并输出为 .bin 文件。")
+    parser.add_argument("--input", required=True, type=Path, help="要编码的文本文件路径")
+    parser.add_argument("--output", required=True, type=Path, help="输出 .bin 文件路径")
+    parser.add_argument(
+        "--vocab",
+        default=default_tokenizer_dir / "vocab.json",
+        type=Path,
+        help="train_bpe.py 生成的 vocab.json 路径，默认 ../../data/TinyStoriesV2-GPT4/vocab.json",
+    )
+    parser.add_argument(
+        "--merges",
+        default=default_tokenizer_dir / "merges.txt",
+        type=Path,
+        help="train_bpe.py 生成的 merges.txt 路径，默认 ../../data/TinyStoriesV2-GPT4/merges.txt",
+    )
+    parser.add_argument("--encoding", default="utf-8", help="输入文本编码，默认 utf-8")
+    parser.add_argument(
+        "--dtype",
+        choices=["uint16", "uint32"],
+        default="uint16",
+        help="写入 .bin 的整数类型，默认 uint16",
+    )
+    parser.add_argument(
+        "--special-token",
+        action="append",
+        default=None,
+        help="特殊 token，可重复传入，例如 --special-token '<|endoftext|>'",
+    )
+    parser.add_argument(
+        "--no-special-tokens",
+        action="store_true",
+        help="不启用特殊 token 匹配。默认启用 <|endoftext|>",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    special_tokens = [] if args.no_special_tokens else (args.special_token or ["<|endoftext|>"])
+
+    tk = load_tokenizer_files(
+        vocab_path=args.vocab,
+        merges_path=args.merges,
+        special_tokens=special_tokens,
+    )
+    text = args.input.read_text(encoding=args.encoding)
+    token_ids = tk.encode(text)
+    write_token_ids_bin(token_ids, args.output, args.dtype)
+
+    print(f"编码完成: {len(token_ids)} tokens")
+    print(f"输出文件: {args.output}")
+
+
+if __name__ == "__main__":
+    main()
